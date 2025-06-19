@@ -2,7 +2,7 @@ import os
 import uuid
 import logging
 import math
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 
 # ====================================
@@ -11,9 +11,10 @@ from werkzeug.utils import secure_filename
 from faster_whisper import WhisperModel
 import torch
 
-model_size = "base"
+# Modelo más ligero para Render Free
+model_size = "tiny"
 device = "cuda" if torch.cuda.is_available() else "cpu"
-compute_type = "float16" if device == "cuda" else "int8"
+compute_type = "int8"
 
 model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -22,30 +23,30 @@ def transcribe_audio_file(file_path):
     return " ".join([seg.text for seg in segments])
 
 # ====================================
-# Flask App
+# Configuración de Flask
 # ====================================
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "whisper-secret")
 
-# Configuración de archivos
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 ALLOWED_EXTENSIONS = {'mp3', 'wav', 'ogg', 'm4a', 'flac', 'mp4', 'webm'}
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def process_audio(file_path):
-    # Aquí podrías dividir o convertir el audio si deseas.
-    return [file_path]
+# ====================================
+# Funciones principales
+# ====================================
 
 @app.route('/')
 def index():
@@ -66,14 +67,16 @@ def index():
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
     if 'audio_file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        return jsonify({'error': 'No se subió ningún archivo'}), 400
 
     file = request.files['audio_file']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': 'Nombre de archivo vacío'}), 400
     if not allowed_file(file.filename):
         return jsonify({'error': f'Tipo de archivo no soportado. Tipos válidos: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
 
+    transcription = []
+    file_path = None
     try:
         filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4()}_{filename}"
@@ -81,24 +84,23 @@ def transcribe():
         file.save(file_path)
         logger.info(f"Archivo guardado: {file_path}")
 
-        chunks = process_audio(file_path)
-        transcription = []
+        result = transcribe_audio_file(file_path)
+        transcription.append(result)
 
-        for chunk in chunks:
-            result = transcribe_audio_file(chunk)
-            transcription.append(result)
-            if chunk != file_path:
-                try: os.remove(chunk)
-                except: pass
-
-        try: os.remove(file_path)
-        except: pass
-
-        return jsonify({'transcription': ' '.join(transcription)})
-    
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error(f"Error en transcripción: {e}")
         return jsonify({'error': str(e)}), 500
+
+    finally:
+        # 🔥 Siempre eliminar el archivo original
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Archivo eliminado: {file_path}")
+            except Exception as e:
+                logger.warning(f"No se pudo eliminar el archivo: {e}")
+
+    return jsonify({'transcription': ' '.join(transcription)})
 
 @app.route('/api/transcribe', methods=['POST'])
 def api_transcribe():
