@@ -1,0 +1,8 @@
+flask
+gunicorn
+faster-whisper
+torch
+numpy
+werkzeug
+scipy
+ffmpeg-python
