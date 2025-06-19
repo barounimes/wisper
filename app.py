@@ -11,21 +11,32 @@ from werkzeug.utils import secure_filename
 from faster_whisper import WhisperModel
 import torch
 
-# Modelo más ligero para Render Free
+# Configuración del modelo
 model_size = "tiny"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 compute_type = "int8"
-
 model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
+# Logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.info(f"Modelo Whisper cargado: {model_size}, dispositivo: {device}, tipo: {compute_type}")
+
+# Transcripción
 def transcribe_audio_file(file_path):
-    segments, _ = model.transcribe(file_path)
-    return " ".join([seg.text for seg in segments])
+    try:
+        logger.info(f"Iniciando transcripción del archivo: {file_path}")
+        segments, _ = model.transcribe(file_path)
+        texts = [seg.text for seg in segments if seg.text.strip()]
+        logger.info(f"Segmentos encontrados: {len(texts)}")
+        return " ".join(texts)
+    except Exception as e:
+        logger.error(f"Error al transcribir el archivo: {e}")
+        return ""
 
 # ====================================
 # Configuración de Flask
 # ====================================
-
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "whisper-secret")
 
@@ -38,16 +49,12 @@ MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # ====================================
-# Funciones principales
+# Rutas
 # ====================================
-
 @app.route('/')
 def index():
     return '''
@@ -75,7 +82,7 @@ def transcribe():
     if not allowed_file(file.filename):
         return jsonify({'error': f'Tipo de archivo no soportado. Tipos válidos: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
 
-    transcription = []
+    transcription = ""
     file_path = None
     try:
         filename = secure_filename(file.filename)
@@ -84,15 +91,14 @@ def transcribe():
         file.save(file_path)
         logger.info(f"Archivo guardado: {file_path}")
 
-        result = transcribe_audio_file(file_path)
-        transcription.append(result)
+        transcription = transcribe_audio_file(file_path)
+        logger.info(f"Resultado de la transcripción: {transcription[:100]}...")
 
     except Exception as e:
         logger.error(f"Error en transcripción: {e}")
         return jsonify({'error': str(e)}), 500
 
     finally:
-        # 🔥 Siempre eliminar el archivo original
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -100,7 +106,16 @@ def transcribe():
             except Exception as e:
                 logger.warning(f"No se pudo eliminar el archivo: {e}")
 
-    return jsonify({'transcription': ' '.join(transcription)})
+    # Mostrar HTML si viene del navegador
+    if request.content_type.startswith('multipart/form-data'):
+        return f'''
+        <h2>Transcripción:</h2>
+        <pre>{transcription or "⚠️ No se pudo generar ninguna transcripción."}</pre>
+        <a href="/">← Volver</a>
+        '''
+
+    # Si vino por API (JSON)
+    return jsonify({'transcription': transcription})
 
 @app.route('/api/transcribe', methods=['POST'])
 def api_transcribe():
@@ -113,7 +128,7 @@ def keepalive():
     texto = data.get("texto", "default")
     activo = data.get("activo", False)
 
-    print(f"Keepalive recibido: valor={valor}, texto='{texto}', activo={activo}")
+    logger.info(f"Keepalive recibido: valor={valor}, texto='{texto}', activo={activo}")
 
     result = 0
     for i in range(1, valor):
@@ -121,6 +136,9 @@ def keepalive():
 
     return f'Ping OK | Resultado: {result:.2f}', 200
 
+# ====================================
+# Ejecución
+# ====================================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
